@@ -1,0 +1,200 @@
+Let’s walk through what experienced product teams do.
+
+⸻
+
+The Real Next Steps
+
+Step 1 — Kill the Biggest Unknowns First
+
+Right now there are only a few things that could actually break this project:
+	1.	Wi-Fi signal access on iOS
+	2.	Indoor movement tracking accuracy
+	3.	Heatmap generation performance
+	4.	User interaction complexity
+
+You do tiny experiments to answer those questions.
+
+Not a full app.
+
+Just proof-of-concept scripts.
+
+Example experiments:
+
+• Can we read RSSI repeatedly while walking?
+• Can we track movement from phone sensors reliably for ~30 seconds?
+• Can we draw a heatmap from 50 points quickly?
+
+These tests can be done in a weekend.
+
+That’s how real engineering projects move forward.
+
+⸻
+
+Step 2 — Build the Ugliest Prototype Possible
+
+Not a product.
+
+A tool.
+
+Engineers call this a spike prototype.
+
+Imagine a super crude app that:
+	1.	shows current RSSI
+	2.	logs samples
+	3.	lets you tap points on an image
+	4.	draws colored circles
+
+That’s it.
+
+No login
+No polish
+No branding
+No onboarding
+
+Just proof the core concept works.
+
+⸻
+
+Step 3 — Test It in the Real World
+
+Walk around your house.
+
+Walk around a garage.
+
+Walk around a warehouse.
+
+See if the heatmap actually reflects reality.
+
+If it does, the idea survives.
+
+If it doesn’t, you adjust.
+
+This stage reveals 90% of hidden problems.
+
+⸻
+
+Step 4 — Only Then Build the Real Product
+
+Once the prototype proves the concept:
+
+Then you design the real UX.
+
+Then you polish.
+
+Then you build the production architecture.
+
+Skipping that step is where most ideas die.
+
+⸻
+
+Step 5 — Recruit a Developer the Right Way
+
+When you talk to your lead dev friend, don’t say:
+
+“I have an app idea.”
+
+Say this instead:
+
+“I built a working prototype that maps signal strength onto a floorplan. I want to turn it into a product.”
+
+That changes the entire conversation.
+
+Developers respect working prototypes far more than idea decks.
+
+⸻
+
+One More Hard Truth
+
+The biggest killer of projects like this isn’t tech.
+
+It’s scope creep.
+
+Right now the core app is extremely simple:
+
+Walk → sample signal → paint heatmap.
+
+That’s the product.
+
+Everything else is optional.
+
+⸻
+
+A Very Important Insight
+
+The most successful apps start with a single job.
+
+Examples:
+
+Uber → get a ride
+Shazam → identify a song
+Speedtest → test internet speed
+
+Your core job is:
+
+“Show me the best place for my wireless devices.”
+
+Everything in the app should serve that.
+
+⸻
+
+What I’d Do If This Were My Project
+
+Week 1
+Build RSSI logger
+
+Week 2
+Add floorplan overlay
+
+Week 3
+Generate heatmap
+
+Week 4
+Test accuracy
+
+Week 5
+Design real UI
+
+Week 6+
+Build production version
+
+You could realistically prove this concept in a month of nights/weekends.
+
+⸻
+
+My Biggest Piece of Advice
+
+Don’t try to build a startup.
+
+Build a tool that solves your own problem.
+
+If it works well for you, it will probably work for others.
+
+⸻
+
+The Really Encouraging Thing
+
+Your idea isn’t crazy.
+
+Professional RF survey software already exists.
+
+But it’s:
+
+• expensive
+• complicated
+• enterprise-focused
+
+You’re basically proposing:
+
+“Make Ekahau for normal humans.”
+
+That’s actually a very solid product thesis.
+
+⸻
+
+If you want, the next thing we should design is:
+
+The absolute smallest prototype architecture
+
+The 10 functions that prove the whole idea works.
+
+Once that exists, the project stops being an idea and becomes software.
