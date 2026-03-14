@@ -1,0 +1,58 @@
+name: signalmap
+description: "SignalMap - Turn Wi-Fi signal strength into a floor-plan heatmap and placement recommender."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # WiFi / network info
+  network_info_plus: ^6.0.0
+
+  # Sensors (accelerometer, gyroscope)
+  sensors_plus: ^6.0.0
+
+  # Step / pedometer
+  pedometer: ^4.0.0
+
+  # Compass / heading
+  flutter_compass: ^0.8.0
+
+  # Image picker (floor plan upload)
+  image_picker: ^1.1.2
+
+  # Local storage
+  path_provider: ^2.1.4
+  sqflite: ^2.3.3
+
+  # State management
+  provider: ^6.1.2
+
+  # Navigation
+  go_router: ^14.2.7
+
+  # UUID generation
+  uuid: ^4.5.1
+
+  # Shared preferences (settings)
+  shared_preferences: ^2.3.2
+
+  # File utilities
+  path: ^1.9.0
+
+  # Permissions
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
