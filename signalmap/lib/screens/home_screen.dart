@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import '../models/floorplan.dart';
 import '../models/project.dart';
 import '../models/scan_session.dart';
+import '../services/scan_controller.dart';
 import '../services/storage_service.dart';
 
 const _uuid = Uuid();
@@ -31,7 +32,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadProjects() async {
     final storage = context.read<StorageService>();
     final projects = await storage.loadProjects();
-    // Load completed scan counts for each project.
     final counts = <String, int>{};
     for (final p in projects) {
       final sessions = await storage.loadSessionsForProject(p.id);
@@ -48,6 +48,29 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Open a project:
+  ///  - If it has at least one completed scan → load the latest into
+  ///    [ScanController] and navigate directly to the results screen.
+  ///  - Otherwise → navigate to the setup screen to begin a new scan.
+  Future<void> _openProject(BuildContext context, Project project) async {
+    final storage = context.read<StorageService>();
+    final controller = context.read<ScanController>();
+
+    final latestSession =
+        await storage.loadLatestCompletedSession(project.id);
+
+    if (!mounted) return;
+
+    if (latestSession != null) {
+      // Pre-populate controller with saved scan data (fire async, results
+      // screen has a built-in loading overlay that gives it time to render).
+      controller.loadSavedSession(latestSession.id);
+      context.push('/results?sessionId=${latestSession.id}');
+    } else {
+      context.push('/setup?projectId=${project.id}');
+    }
+  }
+
   Future<void> _createProject(BuildContext context) async {
     final name = await _showNameDialog(context);
     if (name == null || name.isEmpty) return;
@@ -56,7 +79,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final floorplanId = _uuid.v4();
     final projectId = _uuid.v4();
 
-    // Create a placeholder floorplan — user will configure it on the next screen.
     final floorplan = Floorplan(
       id: floorplanId,
       imagePath: '',
@@ -173,7 +195,7 @@ class _HomeScreenState extends State<HomeScreen> {
         itemBuilder: (_, i) => _ProjectCard(
           project: _projects[i],
           scanCount: _scanCounts[_projects[i].id] ?? 0,
-          onTap: () => context.push('/setup?projectId=${_projects[i].id}'),
+          onTap: () => _openProject(context, _projects[i]),
           onDelete: () async {
             final confirmed = await _confirmDelete(context, _projects[i].name);
             if (confirmed == true) {
@@ -249,14 +271,17 @@ class _ProjectCard extends StatelessWidget {
             border: Border.all(
                 color: theme.colorScheme.primary.withOpacity(0.3)),
           ),
-          child: Icon(Icons.wifi_find, color: theme.colorScheme.primary),
+          child: Icon(
+            scanCount > 0 ? Icons.wifi_find : Icons.add_chart,
+            color: theme.colorScheme.primary,
+          ),
         ),
         title: Text(project.name, style: theme.textTheme.titleLarge),
         subtitle: Text(
           scanCount == 0
-              ? 'Updated ${_formatDate(project.updatedAt)} — no scans yet'
+              ? 'Updated ${_formatDate(project.updatedAt)} — tap to set up'
               : 'Updated ${_formatDate(project.updatedAt)} · '
-                '$scanCount scan${scanCount == 1 ? '' : 's'} saved',
+                '$scanCount scan${scanCount == 1 ? '' : 's'} saved — tap to view',
           style: theme.textTheme.bodyMedium,
         ),
         trailing: Row(

@@ -19,12 +19,6 @@ const _uuid = Uuid();
 
 /// High-level controller that orchestrates [SignalService], [MotionService],
 /// and [HeatmapService] during an active scan session.
-///
-/// Responsible for:
-///   - Deciding when to commit a [SamplePoint] (distance + dwell thresholds).
-///   - Appending [PathEvent]s for replay.
-///   - Triggering heatmap rebuilds after commits.
-///   - Finalising the session and running recommendations.
 class ScanController extends ChangeNotifier {
   final SignalService signal;
   final MotionService motion;
@@ -61,10 +55,6 @@ class ScanController extends ChangeNotifier {
   });
 
   /// Prepare a new scan session for [floorplan].
-  ///
-  /// [routerAnchor] is the user-confirmed router position in real-world
-  /// metres. It is stored here and applied after the motion sensor reset
-  /// when [startScan] is called, so the position dot begins at the router.
   void prepare({
     required Floorplan floorplan,
     required String projectId,
@@ -85,6 +75,34 @@ class ScanController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Load a completed saved session into the controller for viewing results.
+  ///
+  /// Populates [session] and [floorplan] from storage and rebuilds the heatmap
+  /// so [ResultsScreen] can display it without a live scan.
+  Future<void> loadSavedSession(String sessionId) async {
+    final session = await storage.loadSessionById(sessionId);
+    if (session == null) return;
+
+    final points = await storage.loadSamplePoints(sessionId);
+    final recs = await storage.loadRecommendations(sessionId);
+    session.samplePoints.addAll(points);
+    session.recommendations = recs;
+
+    final floorplan = await storage.loadFloorplan(session.floorplanId);
+
+    _session = session;
+    _floorplan = floorplan;
+    _routerAnchorMeters = session.routerX != null && session.routerY != null
+        ? Offset(session.routerX!, session.routerY!)
+        : null;
+
+    if (points.isNotEmpty && floorplan != null) {
+      _rebuildHeatmap();
+    }
+
+    notifyListeners();
+  }
+
   /// Start scanning. Begins sensor data collection and sampling loop.
   Future<void> startScan() async {
     if (_session == null) return;
@@ -101,11 +119,8 @@ class ScanController extends ChangeNotifier {
     await signal.start();
     await motion.start();
 
-    // Commit loop: evaluate every second.
     _commitTimer =
         Timer.periodic(const Duration(seconds: 1), (_) => _maybeCommit());
-
-    // Heatmap refresh loop: rebuild every 2 seconds if new points exist.
     _heatmapTimer =
         Timer.periodic(const Duration(seconds: 2), (_) => _maybeRebuildHeatmap());
 
@@ -122,7 +137,6 @@ class ScanController extends ChangeNotifier {
   /// Apply a manual position correction from the user tapping the floor plan.
   void applyManualAnchor(Offset positionMeters) {
     motion.correctPosition(positionMeters.dx, positionMeters.dy);
-    // Force an immediate commit at the corrected position.
     _commitNow(sourceMode: SourceMode.corrected);
   }
 
@@ -139,12 +153,17 @@ class ScanController extends ChangeNotifier {
     _session!.endTime = DateTime.now();
     notifyListeners();
 
-    // Run recommendation engine.
-    _session!.recommendations =
-        _recommender.analyse(_session!.samplePoints);
+    // Run recommendation engine, passing router anchor for spatial context.
+    final routerPos = _session!.routerX != null && _session!.routerY != null
+        ? Offset(_session!.routerX!, _session!.routerY!)
+        : null;
+    _session!.recommendations = _recommender.analyse(
+      _session!.samplePoints,
+      routerPosition: routerPos,
+    );
 
-    // Persist — save before transitioning to complete so the home screen
-    // sees the scan immediately when the user taps Done.
+    // Persist scan record BEFORE navigating to results so the home screen
+    // sees it immediately.
     await storage.saveSession(_session!);
     await storage.saveSamplePoints(_session!.samplePoints);
     await storage.saveRecommendations(
@@ -212,7 +231,6 @@ class ScanController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Called by the 2-second timer; only rebuilds if there are new points.
   int _lastHeatmapPointCount = 0;
   void _maybeRebuildHeatmap() {
     final count = _session?.samplePoints.length ?? 0;
