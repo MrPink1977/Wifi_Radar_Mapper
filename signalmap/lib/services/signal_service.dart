@@ -107,18 +107,9 @@ class SignalService extends ChangeNotifier {
   }
 
   Future<double?> _getRssi() async {
-    // Try to get RSSI via platform-specific means.
-    // network_info_plus v6 provides getWifiSignalStrength on Android.
-    try {
-      final strength = await _networkInfo.getWifiSignalStrength();
-      if (strength != null) {
-        // Android returns signal level (0-4); convert to approximate dBm.
-        // Level 4 ≈ -50 dBm, Level 0 ≈ -90 dBm. Linear interpolation.
-        return -90.0 + (strength / 4.0) * 40.0;
-      }
-    } catch (_) {}
-
-    // During development / simulator, return a plausible simulated value.
+    // network_info_plus does not expose RSSI/signal-strength on all platforms.
+    // Fall back to a simulated value during development/debug mode so the UI
+    // remains functional without real hardware.
     if (kDebugMode) {
       return _simulateRssi();
     }
