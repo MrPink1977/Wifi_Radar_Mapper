@@ -9,7 +9,6 @@ import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/floorplan.dart';
-import '../models/scan_session.dart';
 import '../services/scan_controller.dart';
 import '../services/signal_service.dart';
 import '../services/storage_service.dart';
@@ -17,7 +16,7 @@ import '../widgets/floorplan_canvas.dart';
 
 const _uuid = Uuid();
 
-enum _SetupStep { uploadFloorplan, calibrate, setAnchor, ready }
+enum _SetupStep { uploadFloorplan, calibrate, setRouterAnchor, ready }
 
 class FloorplanSetupScreen extends StatefulWidget {
   final String projectId;
@@ -35,12 +34,27 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
   // Calibration
   Offset? _calPoint1;
   Offset? _calPoint2;
-  final _distanceController = TextEditingController(text: '5.0');
+  final _distanceController = TextEditingController(text: '16.0');
+  bool _useFeet = true; // default; overridden from locale in didChangeDependencies
 
-  // Start anchor
-  Offset? _startAnchorPixels;
+  // Router anchor
+  Offset? _routerAnchorPixels;
 
   final _picker = ImagePicker();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Set unit default once from device locale.
+    final locale = Localizations.localeOf(context);
+    final shouldUseFeet = locale.countryCode == 'US';
+    if (shouldUseFeet != _useFeet) {
+      setState(() {
+        _useFeet = shouldUseFeet;
+        _distanceController.text = _useFeet ? '16.0' : '5.0';
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -52,28 +66,24 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
     final file = await _picker.pickImage(source: source, imageQuality: 90);
     if (file == null) return;
 
-    // Copy to app documents so the path is stable.
     final docDir = await getApplicationDocumentsDirectory();
     final dest = p.join(docDir.path, 'floorplans', '${_uuid.v4()}.jpg');
     await Directory(p.dirname(dest)).create(recursive: true);
     await File(file.path).copy(dest);
 
     final storage = context.read<StorageService>();
-
-    // Load existing floorplan for this project or create a fresh one.
     final projects = await storage.loadProjects();
     final project = projects.firstWhere((pr) => pr.id == widget.projectId);
     var floorplan = await storage.loadFloorplan(project.floorplanId);
     floorplan ??= Floorplan(id: project.floorplanId, imagePath: dest);
-    floorplan.imagePath != dest
-        ? floorplan = Floorplan(
-            id: project.floorplanId,
-            imagePath: dest,
-            anchorPoints: [],
-          )
-        : null;
-
-    await storage.saveFloorplan(floorplan!);
+    if (floorplan.imagePath != dest) {
+      floorplan = Floorplan(
+        id: project.floorplanId,
+        imagePath: dest,
+        anchorPoints: [],
+      );
+    }
+    await storage.saveFloorplan(floorplan);
 
     setState(() {
       _imagePath = dest;
@@ -97,49 +107,53 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
 
   Future<void> _applyCalibration() async {
     if (_calPoint1 == null || _calPoint2 == null || _floorplan == null) return;
-    final dist = double.tryParse(_distanceController.text) ?? 5.0;
+    final rawInput = double.tryParse(_distanceController.text) ??
+        (_useFeet ? 16.0 : 5.0);
+    // Always store/calculate in metres internally.
+    final distMeters = _useFeet ? rawInput * 0.3048 : rawInput;
 
     final a = AnchorPoint(
         id: 'cal_a', position: _calPoint1!, realWorldX: 0, realWorldY: 0);
     final b = AnchorPoint(
         id: 'cal_b',
         position: _calPoint2!,
-        realWorldX: dist,
+        realWorldX: distMeters,
         realWorldY: 0);
 
     _floorplan!.anchorPoints = [a, b];
-    _floorplan!.calibrateScale(a, b, dist);
+    _floorplan!.calibrateScale(a, b, distMeters);
 
     await context.read<StorageService>().saveFloorplan(_floorplan!);
-    setState(() => _step = _SetupStep.setAnchor);
+    setState(() => _step = _SetupStep.setRouterAnchor);
   }
 
-  void _onAnchorTap(Offset pixelPosition) {
-    setState(() => _startAnchorPixels = pixelPosition);
+  void _onRouterAnchorTap(Offset pixelPosition) {
+    setState(() => _routerAnchorPixels = pixelPosition);
   }
 
   Future<void> _startScan() async {
-    if (_floorplan == null || _startAnchorPixels == null) return;
+    if (_floorplan == null || _routerAnchorPixels == null) return;
 
     final signalService = context.read<SignalService>();
     await signalService.start();
     final ssid = signalService.connectedSsid ?? 'Unknown Network';
 
     final controller = context.read<ScanController>();
+    final routerMeters = _floorplan!.pixelsToMeters(_routerAnchorPixels!);
+
     controller.prepare(
       floorplan: _floorplan!,
       projectId: widget.projectId,
       networkId: ssid,
+      routerAnchor: routerMeters,
     );
-
-    // Apply the start anchor position.
-    final startMeters = _floorplan!.pixelsToMeters(_startAnchorPixels!);
-    controller.motion.correctPosition(startMeters.dx, startMeters.dy);
 
     if (mounted) {
       context.push('/scan?sessionId=${controller.session!.id}');
     }
   }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -152,9 +166,8 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
             if (_step == _SetupStep.uploadFloorplan) {
               context.pop();
             } else {
-              setState(() {
-                _step = _SetupStep.values[_step.index - 1];
-              });
+              setState(() =>
+                  _step = _SetupStep.values[_step.index - 1]);
             }
           },
         ),
@@ -176,8 +189,8 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
         return 'Upload Floor Plan';
       case _SetupStep.calibrate:
         return 'Calibrate Scale';
-      case _SetupStep.setAnchor:
-        return 'Set Start Point';
+      case _SetupStep.setRouterAnchor:
+        return 'Place Your Router';
       case _SetupStep.ready:
         return 'Ready to Scan';
     }
@@ -212,12 +225,14 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
         return _buildUploadStep();
       case _SetupStep.calibrate:
         return _buildCalibrateStep();
-      case _SetupStep.setAnchor:
-        return _buildAnchorStep();
+      case _SetupStep.setRouterAnchor:
+        return _buildRouterAnchorStep();
       case _SetupStep.ready:
         return _buildReadyStep();
     }
   }
+
+  // ── Step: Upload ───────────────────────────────────────────────────────────
 
   Widget _buildUploadStep() {
     final theme = Theme.of(context);
@@ -240,7 +255,8 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
             child: Column(
               children: [
                 Icon(Icons.upload_file,
-                    size: 64, color: theme.colorScheme.primary.withOpacity(0.7)),
+                    size: 64,
+                    color: theme.colorScheme.primary.withOpacity(0.7)),
                 const SizedBox(height: 16),
                 Text('Upload your floor plan',
                     style: theme.textTheme.titleLarge),
@@ -278,20 +294,86 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
     );
   }
 
+  // ── Step: Calibrate ────────────────────────────────────────────────────────
+
   Widget _buildCalibrateStep() {
     final theme = Theme.of(context);
+    final unitLabel = _useFeet ? 'ft' : 'm';
+    final bothSet = _calPoint1 != null && _calPoint2 != null;
+
+    String instruction;
+    if (_calPoint1 == null) {
+      instruction = 'Tap the FIRST calibration point on your floor plan.';
+    } else if (_calPoint2 == null) {
+      instruction = 'Now tap the SECOND calibration point.';
+    } else {
+      instruction = 'Both points set. Enter the distance below.';
+    }
+
     return Column(
       children: [
+        // Explanation card
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          child: Text(
-            _calPoint1 == null
-                ? 'Tap the FIRST calibration point on your floor plan.'
-                : _calPoint2 == null
-                    ? 'Now tap the SECOND calibration point.'
-                    : 'Both points set. Enter the real-world distance below.',
-            style: theme.textTheme.bodyLarge,
-            textAlign: TextAlign.center,
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withOpacity(0.07),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: theme.colorScheme.primary.withOpacity(0.2)),
+            ),
+            child: Text(
+              'Pick two points on your floor plan that you know the real '
+              'distance between — for example, tap one end of a hallway '
+              'and then the other. Enter how far apart they really are. '
+              'This tells the app how big your space is so it can place '
+              'signal readings in the right locations.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(instruction,
+                    style: theme.textTheme.bodyMedium),
+              ),
+              const SizedBox(width: 8),
+              // Feet / Meters toggle
+              SegmentedButton<bool>(
+                style: SegmentedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                segments: const [
+                  ButtonSegment(value: true, label: Text('ft')),
+                  ButtonSegment(value: false, label: Text('m')),
+                ],
+                selected: {_useFeet},
+                onSelectionChanged: (v) {
+                  final nowFeet = v.first;
+                  if (nowFeet == _useFeet) return;
+                  final current =
+                      double.tryParse(_distanceController.text) ?? 0.0;
+                  setState(() {
+                    _useFeet = nowFeet;
+                    if (_useFeet) {
+                      // was meters → feet
+                      _distanceController.text =
+                          (current / 0.3048).toStringAsFixed(1);
+                    } else {
+                      // was feet → meters
+                      _distanceController.text =
+                          (current * 0.3048).toStringAsFixed(1);
+                    }
+                  });
+                },
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -303,24 +385,27 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
                     position: _calPoint1!, color: Colors.blue, label: 'A'),
               if (_calPoint2 != null)
                 CanvasMarker(
-                    position: _calPoint2!, color: Colors.orange, label: 'B'),
+                    position: _calPoint2!,
+                    color: Colors.orange,
+                    label: 'B'),
             ],
             onTap: _onCalibrationTap,
           ),
         ),
-        if (_calPoint1 != null && _calPoint2 != null)
+        if (bothSet)
           Padding(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(20),
             child: Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _distanceController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Distance between A and B (metres)',
-                      border: OutlineInputBorder(),
-                      suffixText: 'm',
+                    keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Distance between A and B',
+                      border: const OutlineInputBorder(),
+                      suffixText: unitLabel,
                     ),
                   ),
                 ),
@@ -336,49 +421,74 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
     );
   }
 
-  Widget _buildAnchorStep() {
+  // ── Step: Router Anchor ────────────────────────────────────────────────────
+
+  Widget _buildRouterAnchorStep() {
     final theme = Theme.of(context);
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withOpacity(0.07),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: theme.colorScheme.primary.withOpacity(0.2)),
+            ),
+            child: const Text(
+              'Stand next to your router or main Wi-Fi node. Tap your '
+              'router\'s position on the map, then tap Confirm. We will '
+              'record signal strength as you walk and build your coverage '
+              'map in real time.',
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
           child: Text(
-            _startAnchorPixels == null
-                ? 'Tap where you will START your scan walk on the floor plan.'
-                : 'Start point set! Move to that spot in real life, then tap Next.',
-            style: theme.textTheme.bodyLarge,
+            _routerAnchorPixels == null
+                ? 'Tap where your router is on the floor plan.'
+                : 'Router placed. Stand next to it in real life, then tap Confirm.',
+            style: theme.textTheme.bodyMedium,
             textAlign: TextAlign.center,
           ),
         ),
+        const SizedBox(height: 4),
         Expanded(
           child: FloorplanCanvas(
             imagePath: _imagePath!,
             markers: [
-              if (_startAnchorPixels != null)
+              if (_routerAnchorPixels != null)
                 CanvasMarker(
-                  position: _startAnchorPixels!,
-                  color: Theme.of(context).colorScheme.primary,
-                  label: 'START',
+                  position: _routerAnchorPixels!,
+                  color: const Color(0xFF2196F3),
+                  label: 'R',
+                  radius: 14,
                 ),
             ],
-            onTap: _onAnchorTap,
+            onTap: _onRouterAnchorTap,
           ),
         ),
-        if (_startAnchorPixels != null)
+        if (_routerAnchorPixels != null)
           Padding(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(20),
             child: SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: () => setState(() => _step = _SetupStep.ready),
-                icon: const Icon(Icons.check),
-                label: const Text('Confirm Start Point'),
+                onPressed: () =>
+                    setState(() => _step = _SetupStep.ready),
+                icon: const Icon(Icons.wifi),
+                label: const Text('Confirm Router Position'),
               ),
             ),
           ),
       ],
     );
   }
+
+  // ── Step: Ready ────────────────────────────────────────────────────────────
 
   Widget _buildReadyStep() {
     final theme = Theme.of(context);
@@ -406,8 +516,7 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
           ),
           _Tip(
             icon: Icons.refresh,
-            text:
-                'You can scan multiple times to build confidence.',
+            text: 'You can scan multiple times to build confidence.',
           ),
           const SizedBox(height: 32),
           SizedBox(
@@ -415,7 +524,7 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
             child: FilledButton.icon(
               onPressed: _startScan,
               icon: const Icon(Icons.wifi_find),
-              label: const Text('START SCANNING'),
+              label: const Text('BEGIN SCAN'),
             ),
           ),
         ],

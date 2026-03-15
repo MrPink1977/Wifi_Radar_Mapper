@@ -13,7 +13,7 @@ import '../models/scan_session.dart';
 /// Persists all SignalMap data in a local SQLite database.
 class StorageService {
   static const _dbName = 'signalmap.db';
-  static const _version = 1;
+  static const _version = 2;
 
   late Database _db;
 
@@ -25,7 +25,18 @@ class StorageService {
       dbPath,
       version: _version,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Add router anchor columns to persisted sessions.
+      await db.execute(
+          'ALTER TABLE scan_sessions ADD COLUMN routerX REAL');
+      await db.execute(
+          'ALTER TABLE scan_sessions ADD COLUMN routerY REAL');
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -59,7 +70,9 @@ class StorageService {
         startTime TEXT NOT NULL,
         endTime TEXT,
         state TEXT NOT NULL,
-        algorithmVersion INTEGER NOT NULL
+        algorithmVersion INTEGER NOT NULL,
+        routerX REAL,
+        routerY REAL
       )
     ''');
 

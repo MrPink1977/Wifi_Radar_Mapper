@@ -73,7 +73,16 @@ class _HeatmapTab extends StatelessWidget {
           child: FloorplanCanvas(
             imagePath: floorplan.imagePath,
             markers: [
-              // Recommendation pins
+              // Router position marker (blue 'R') — spatial reference.
+              if (session.routerX != null && session.routerY != null)
+                CanvasMarker(
+                  position: floorplan.metersToPixels(
+                      Offset(session.routerX!, session.routerY!)),
+                  color: const Color(0xFF2196F3),
+                  label: 'R',
+                  radius: 12,
+                ),
+              // Recommendation pins.
               ...session.recommendations.map((rec) {
                 final px = floorplan.metersToPixels(rec.position);
                 return CanvasMarker(

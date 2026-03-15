@@ -41,12 +41,17 @@ class ScanController extends ChangeNotifier {
   bool get isScanning =>
       _session?.state == SessionState.scanning;
 
+  // Router anchor (set during prepare, applied after motion reset).
+  Offset? _routerAnchorMeters;
+  Offset? get routerAnchorMeters => _routerAnchorMeters;
+
   // Position tracking for commit logic.
   Offset? _lastCommitPosition;
   DateTime? _lastCommitTime;
 
-  // Listeners
+  // Timers
   Timer? _commitTimer;
+  Timer? _heatmapTimer;
 
   ScanController({
     required this.signal,
@@ -56,18 +61,26 @@ class ScanController extends ChangeNotifier {
   });
 
   /// Prepare a new scan session for [floorplan].
+  ///
+  /// [routerAnchor] is the user-confirmed router position in real-world
+  /// metres. It is stored here and applied after the motion sensor reset
+  /// when [startScan] is called, so the position dot begins at the router.
   void prepare({
     required Floorplan floorplan,
     required String projectId,
     required String networkId,
+    Offset? routerAnchor,
   }) {
     _floorplan = floorplan;
+    _routerAnchorMeters = routerAnchor;
     _session = ScanSession(
       id: _uuid.v4(),
       projectId: projectId,
       floorplanId: floorplan.id,
       signalType: SignalType.wifi,
       networkId: networkId,
+      routerX: routerAnchor?.dx,
+      routerY: routerAnchor?.dy,
     );
     notifyListeners();
   }
@@ -77,12 +90,24 @@ class ScanController extends ChangeNotifier {
     if (_session == null) return;
     _session!.state = SessionState.scanning;
 
+    // Reset to origin first, then immediately apply the router anchor so the
+    // position dot starts where the user is standing (not at (0,0)).
     motion.resetToOrigin();
+    if (_routerAnchorMeters != null) {
+      motion.correctPosition(
+          _routerAnchorMeters!.dx, _routerAnchorMeters!.dy);
+    }
+
     await signal.start();
     await motion.start();
 
-    // Evaluate whether to commit a point every second.
-    _commitTimer = Timer.periodic(const Duration(seconds: 1), (_) => _maybeCommit());
+    // Commit loop: evaluate every second.
+    _commitTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _maybeCommit());
+
+    // Heatmap refresh loop: rebuild every 2 seconds if new points exist.
+    _heatmapTimer =
+        Timer.periodic(const Duration(seconds: 2), (_) => _maybeRebuildHeatmap());
 
     notifyListeners();
   }
@@ -104,6 +129,7 @@ class ScanController extends ChangeNotifier {
   /// Finish the scan, run recommendations, and persist everything.
   Future<void> finishScan() async {
     _commitTimer?.cancel();
+    _heatmapTimer?.cancel();
     signal.stop();
     motion.stop();
 
@@ -179,12 +205,17 @@ class ScanController extends ChangeNotifier {
     _lastCommitPosition = Offset(pos.x, pos.y);
     _lastCommitTime = DateTime.now();
 
-    // Rebuild heatmap every 3 new points (avoid hammering).
-    if (_session!.samplePoints.length % 3 == 0 && _floorplan != null) {
+    notifyListeners();
+  }
+
+  // Called by the 2-second timer; only rebuilds if there are new points.
+  int _lastHeatmapPointCount = 0;
+  void _maybeRebuildHeatmap() {
+    final count = _session?.samplePoints.length ?? 0;
+    if (count > _lastHeatmapPointCount) {
+      _lastHeatmapPointCount = count;
       _rebuildHeatmap();
     }
-
-    notifyListeners();
   }
 
   void _rebuildHeatmap() {
@@ -209,6 +240,7 @@ class ScanController extends ChangeNotifier {
   @override
   void dispose() {
     _commitTimer?.cancel();
+    _heatmapTimer?.cancel();
     signal.dispose();
     motion.dispose();
     heatmap.dispose();

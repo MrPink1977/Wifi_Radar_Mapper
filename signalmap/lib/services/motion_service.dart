@@ -70,6 +70,16 @@ class MotionService extends ChangeNotifier {
   DateTime? _lastStepTime;
   int _stepCount = 0;
 
+  /// Approximate steps per second based on total steps and elapsed scan time.
+  /// Returns 0.0 if not enough time has passed to measure meaningfully.
+  double get stepsPerSecond {
+    if (_startTime == null || _stepCount == 0) return 0.0;
+    final elapsed =
+        DateTime.now().difference(_startTime!).inMilliseconds / 1000.0;
+    if (elapsed < 2.0) return 0.0;
+    return _stepCount / elapsed;
+  }
+
   // Heading
   double _headingDeg = 0;
 
