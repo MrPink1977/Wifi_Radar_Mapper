@@ -389,6 +389,16 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
                     color: Colors.orange,
                     label: 'B'),
             ],
+            lines: [
+              if (_calPoint1 != null && _calPoint2 != null)
+                CanvasLine(
+                  from: _calPoint1!,
+                  to: _calPoint2!,
+                  color: Colors.white.withOpacity(0.7),
+                  strokeWidth: 2.0,
+                  label: '${_distanceController.text} ${_useFeet ? 'ft' : 'm'}',
+                ),
+            ],
             onTap: _onCalibrationTap,
           ),
         ),

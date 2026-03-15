@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
@@ -22,6 +25,9 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> {
   bool _started = false;
+  bool _isFinishing = false;
+  String _finishingMessage = 'Analysing signal data\u2026';
+  Size? _imageSize;
 
   @override
   void initState() {
@@ -32,12 +38,40 @@ class _ScanScreenState extends State<ScanScreen> {
   Future<void> _beginScan() async {
     final controller = context.read<ScanController>();
     await controller.startScan();
+    // Resolve image size for HeatmapOverlay coordinate mapping.
+    final fp = controller.floorplan;
+    if (fp != null && fp.imagePath.isNotEmpty) {
+      try {
+        final bytes = await File(fp.imagePath).readAsBytes();
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        if (mounted) {
+          setState(() {
+            _imageSize = Size(
+                frame.image.width.toDouble(), frame.image.height.toDouble());
+            _started = true;
+          });
+          return;
+        }
+      } catch (_) {}
+    }
     if (mounted) setState(() => _started = true);
   }
 
   Future<void> _finishScan() async {
+    setState(() {
+      _isFinishing = true;
+      _finishingMessage = 'Analysing signal data\u2026';
+    });
+
     final controller = context.read<ScanController>();
     await controller.finishScan();
+
+    if (!mounted) return;
+    setState(() => _finishingMessage = 'Building your coverage map\u2026');
+    // Brief pause so the user sees the second message before the results appear.
+    await Future.delayed(const Duration(milliseconds: 1200));
+
     if (mounted) {
       context.pushReplacement(
           '/results?sessionId=${controller.session!.id}');
@@ -75,11 +109,14 @@ class _ScanScreenState extends State<ScanScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
-        if (!didPop && await _onWillPop()) {
+        if (!didPop && !_isFinishing && await _onWillPop()) {
           if (mounted) context.pop();
         }
       },
-      child: Scaffold(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Scaffold(
         appBar: AppBar(
           title: const Text('SCANNING'),
           automaticallyImplyLeading: false,
@@ -119,6 +156,29 @@ class _ScanScreenState extends State<ScanScreen> {
             _buildControls(theme, controller),
           ],
         ),
+      ),
+          // Finishing overlay — shown while finalising the scan.
+          if (_isFinishing)
+            Container(
+              color: Colors.black.withOpacity(0.75),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 24),
+                    Text(
+                      _finishingMessage,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -172,10 +232,11 @@ class _ScanScreenState extends State<ScanScreen> {
                     );
                   }),
               ],
-              overlay: ctrl.heatmap.currentResult != null
+              overlay: (ctrl.heatmap.currentResult != null && _imageSize != null)
                   ? HeatmapOverlay(
                       result: ctrl.heatmap.currentResult!,
                       floorplan: floorplan,
+                      imageSize: _imageSize!,
                     )
                   : null,
               onTap: (pixelPos) {

@@ -20,6 +20,23 @@ class CanvasMarker {
   });
 }
 
+/// A line drawn between two image-pixel positions on the floor plan.
+class CanvasLine {
+  final Offset from;   // image pixels
+  final Offset to;     // image pixels
+  final Color color;
+  final double strokeWidth;
+  final String? label; // optional midpoint label
+
+  const CanvasLine({
+    required this.from,
+    required this.to,
+    this.color = Colors.white,
+    this.strokeWidth = 2.0,
+    this.label,
+  });
+}
+
 /// An optional widget rendered on top of the floor plan image (e.g. heatmap).
 abstract class CanvasOverlay extends Widget {
   /// Paint the overlay onto [canvas] given the current image [rect].
@@ -31,6 +48,7 @@ abstract class CanvasOverlay extends Widget {
 class FloorplanCanvas extends StatefulWidget {
   final String imagePath;
   final List<CanvasMarker> markers;
+  final List<CanvasLine> lines;
   final Widget? overlay; // rendered below markers, above image
   final void Function(Offset pixelPosition)? onTap;
 
@@ -38,6 +56,7 @@ class FloorplanCanvas extends StatefulWidget {
     super.key,
     required this.imagePath,
     this.markers = const [],
+    this.lines = const [],
     this.overlay,
     this.onTap,
   });
@@ -55,6 +74,9 @@ class _FloorplanCanvasState extends State<FloorplanCanvas>
   late AnimationController _pulseController;
   late Animation<double> _pulseAnim;
 
+  // Cached image size for coordinate mapping.
+  Size? _imageSize;
+
   @override
   void initState() {
     super.initState();
@@ -64,6 +86,16 @@ class _FloorplanCanvasState extends State<FloorplanCanvas>
     )..repeat(reverse: true);
     _pulseAnim =
         Tween<double>(begin: 0.6, end: 1.0).animate(_pulseController);
+    _loadImageSize();
+  }
+
+  @override
+  void didUpdateWidget(FloorplanCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imagePath != widget.imagePath) {
+      _imageSize = null;
+      _loadImageSize();
+    }
   }
 
   @override
@@ -71,6 +103,13 @@ class _FloorplanCanvasState extends State<FloorplanCanvas>
     _transformController.dispose();
     _pulseController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadImageSize() async {
+    final size = await _resolveImageSize();
+    if (size != null && mounted) {
+      setState(() => _imageSize = size);
+    }
   }
 
   /// Convert a tap point in widget space back to floor plan image pixels.
@@ -129,21 +168,23 @@ class _FloorplanCanvasState extends State<FloorplanCanvas>
                 ),
               ),
 
-              // Optional heatmap overlay.
+              // Optional heatmap overlay — rendered in widget space.
               if (widget.overlay != null) widget.overlay!,
 
-              // Markers.
-              AnimatedBuilder(
-                animation: _pulseAnim,
-                builder: (_, __) => CustomPaint(
-                  painter: _MarkerPainter(
-                    markers: widget.markers,
-                    pulseScale: _pulseAnim.value,
-                    canvasSize: size,
-                    imagePath: widget.imagePath,
+              // Markers and lines — require image size for correct positioning.
+              if (_imageSize != null)
+                AnimatedBuilder(
+                  animation: _pulseAnim,
+                  builder: (_, __) => CustomPaint(
+                    painter: _MarkerPainter(
+                      markers: widget.markers,
+                      lines: widget.lines,
+                      pulseScale: _pulseAnim.value,
+                      canvasSize: size,
+                      imageSize: _imageSize!,
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ),
@@ -167,24 +208,78 @@ class _FloorplanCanvasState extends State<FloorplanCanvas>
 
 class _MarkerPainter extends CustomPainter {
   final List<CanvasMarker> markers;
+  final List<CanvasLine> lines;
   final double pulseScale;
   final Size canvasSize;
-  final String imagePath;
+  final Size imageSize;
 
   _MarkerPainter({
     required this.markers,
+    required this.lines,
     required this.pulseScale,
     required this.canvasSize,
-    required this.imagePath,
+    required this.imageSize,
   });
+
+  /// Convert an image-pixel position to a widget-space position,
+  /// accounting for BoxFit.contain letterboxing/pillarboxing.
+  Offset _toWidget(Offset imagePx) {
+    final fitted = applyBoxFit(BoxFit.contain, imageSize, canvasSize);
+    final scaleX = fitted.destination.width / imageSize.width;
+    final scaleY = fitted.destination.height / imageSize.height;
+    final offsetX = (canvasSize.width - fitted.destination.width) / 2;
+    final offsetY = (canvasSize.height - fitted.destination.height) / 2;
+    return Offset(
+      offsetX + imagePx.dx * scaleX,
+      offsetY + imagePx.dy * scaleY,
+    );
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
-    // This painter renders markers in widget space; the caller must provide
-    // positions already converted to widget pixels. For a production build,
-    // a proper coordinate mapping using the image's fitted rect should be used.
-    // Here we draw simple circles + labels at the pixel positions.
+    // Draw lines first (behind markers).
+    for (final line in lines) {
+      final fromW = _toWidget(line.from);
+      final toW = _toWidget(line.to);
+
+      final paint = Paint()
+        ..color = line.color
+        ..strokeWidth = line.strokeWidth
+        ..style = PaintingStyle.stroke;
+
+      canvas.drawLine(fromW, toW, paint);
+
+      if (line.label != null && line.label!.isNotEmpty) {
+        final mid = Offset((fromW.dx + toW.dx) / 2, (fromW.dy + toW.dy) / 2);
+        final span = TextSpan(
+          text: line.label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+          ),
+        );
+        final tp = TextPainter(text: span, textDirection: TextDirection.ltr)
+          ..layout();
+        // Draw background pill for readability.
+        final bgRect = Rect.fromCenter(
+          center: mid,
+          width: tp.width + 10,
+          height: tp.height + 6,
+        );
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(bgRect, const Radius.circular(4)),
+          Paint()..color = Colors.black.withOpacity(0.6),
+        );
+        tp.paint(canvas, mid - Offset(tp.width / 2, tp.height / 2));
+      }
+    }
+
+    // Draw markers.
     for (final marker in markers) {
+      final pos = _toWidget(marker.position);
+
       final paint = Paint()
         ..color = marker.color
         ..style = PaintingStyle.fill;
@@ -194,11 +289,18 @@ class _MarkerPainter extends CustomPainter {
         ..style = PaintingStyle.fill;
 
       if (marker.isPulse) {
+        canvas.drawCircle(pos, marker.radius * pulseScale * 2.0, outerPaint);
+        // White outline for visibility over heatmap.
         canvas.drawCircle(
-            marker.position, marker.radius * pulseScale * 2.0, outerPaint);
+            pos,
+            marker.radius + 2,
+            Paint()
+              ..color = Colors.white
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2);
       }
 
-      canvas.drawCircle(marker.position, marker.radius, paint);
+      canvas.drawCircle(pos, marker.radius, paint);
 
       if (marker.label.isNotEmpty) {
         final span = TextSpan(
@@ -218,8 +320,7 @@ class _MarkerPainter extends CustomPainter {
         )..layout();
         tp.paint(
           canvas,
-          marker.position -
-              Offset(tp.width / 2, tp.height / 2),
+          pos - Offset(tp.width / 2, tp.height / 2),
         );
       }
     }
@@ -227,5 +328,8 @@ class _MarkerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MarkerPainter old) =>
-      old.pulseScale != pulseScale || old.markers != markers;
+      old.pulseScale != pulseScale ||
+      old.markers != markers ||
+      old.lines != lines ||
+      old.imageSize != imageSize;
 }

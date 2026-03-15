@@ -14,16 +14,22 @@ class Recommendation {
   final String title;
   final String description;
 
+  /// Optional rank (1, 2, 3) for numbered placement candidates.
+  final int? rank;
+
   const Recommendation({
     required this.type,
     required this.position,
     required this.score,
     required this.title,
     required this.description,
+    this.rank,
   });
 
   /// Icon label shown on the heatmap overlay.
   String get markerLabel {
+    // Ranked placement candidates show their number (1, 2, 3).
+    if (rank != null) return '$rank';
     switch (type) {
       case RecommendationType.bestGateway:
         return '📡';
@@ -43,6 +49,7 @@ class Recommendation {
         'score': score,
         'title': title,
         'description': description,
+        if (rank != null) 'rank': rank,
       };
 
   factory Recommendation.fromMap(Map<String, dynamic> m) => Recommendation(
@@ -54,5 +61,6 @@ class Recommendation {
         score: (m['score'] as num).toDouble(),
         title: m['title'] as String,
         description: m['description'] as String,
+        rank: m['rank'] as int?,
       );
 }

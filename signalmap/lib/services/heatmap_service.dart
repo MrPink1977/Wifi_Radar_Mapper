@@ -2,7 +2,6 @@ import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
 
 import '../models/sample_point.dart';
 import '../utils/constants.dart';
@@ -49,11 +48,6 @@ class HeatmapService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final interpolator = HeatmapInterpolator(
-        points: points,
-        influenceRadius: influenceRadius,
-      );
-
       final grid = await compute(_buildGrid, _GridParams(
         points: points,
         originMeters: originMeters,
@@ -120,13 +114,33 @@ class HeatmapService extends ChangeNotifier {
   }
 
   ui.Color _colorForRssi(double dbm, double confidence) {
-    final normalised = normaliseRssi(dbm);
+    if (confidence < 0.05) {
+      // Unmapped / no-data — dark neutral so blank areas are visually obvious.
+      return const ui.Color(0xFF1A1A2E);
+    }
 
-    // Map 0→1 to red→yellow→green using HSL hue (0°=red, 120°=green).
-    final hue = normalised * 120.0;
+    // Tier-based palette matching the Phase 3 spec (weather-radar model).
+    const ui.Color deepGreen    = ui.Color(0xFF00C853); // Excellent: -40 to -55
+    const ui.Color yellowGreen  = ui.Color(0xFF76FF03); // Strong:    -56 to -65
+    const ui.Color yellow       = ui.Color(0xFFFFD600); // Usable:    -66 to -74
+    const ui.Color orange       = ui.Color(0xFFFF6D00); // Risky:     -75 to -85
+    const ui.Color red          = ui.Color(0xFFD50000); // Dead zone: < -85
+
+    final ui.Color tierColor;
+    if (dbm >= -55) {
+      tierColor = deepGreen;
+    } else if (dbm >= -65) {
+      tierColor = yellowGreen;
+    } else if (dbm >= -74) {
+      tierColor = yellow;
+    } else if (dbm >= -85) {
+      tierColor = orange;
+    } else {
+      tierColor = red;
+    }
+
     final alpha = (200 * confidence).round().clamp(0, 255);
-
-    return HSLColor.fromAHSL(alpha / 255.0, hue, 0.9, 0.5).toColor();
+    return tierColor.withAlpha(alpha);
   }
 
   @override
