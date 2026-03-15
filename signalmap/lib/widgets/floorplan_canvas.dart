@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -154,7 +155,7 @@ class _FloorplanCanvasState extends State<FloorplanCanvas>
     try {
       final file = File(widget.imagePath);
       final bytes = await file.readAsBytes();
-      final codec = await instantiateImageCodec(bytes);
+      final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
       return Size(
           frame.image.width.toDouble(), frame.image.height.toDouble());

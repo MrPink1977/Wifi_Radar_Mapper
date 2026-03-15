@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 
 import '../models/sample_point.dart';
 import '../utils/constants.dart';
@@ -125,7 +126,7 @@ class HeatmapService extends ChangeNotifier {
     final hue = normalised * 120.0;
     final alpha = (200 * confidence).round().clamp(0, 255);
 
-    return ui.HSLColor.fromAHSL(alpha / 255.0, hue, 0.9, 0.5).toColor();
+    return HSLColor.fromAHSL(alpha / 255.0, hue, 0.9, 0.5).toColor();
   }
 
   @override
