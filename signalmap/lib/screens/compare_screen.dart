@@ -31,16 +31,22 @@ class _CompareScreenState extends State<CompareScreen> {
   List<SamplePoint> _pointsB = [];
   Floorplan? _floorplan;
 
-  // Local HeatmapService instances for each session.
-  final _heatA = HeatmapService();
-  final _heatB = HeatmapService();
+  // Heatmap instances are recreated fresh for each render to avoid the
+  // HeatmapService._isProcessing guard silently swallowing a second rebuild
+  // request when the user changes session selection mid-render.
+  HeatmapResult? _resultA;
+  HeatmapResult? _resultB;
 
   bool _loading = true;
   bool _rendering = false;
-  bool _showB = false; // toggle: false = show A, true = show B
+  bool _showB = false;
   Size? _imageSize;
 
-  double? _repeatabilityScore; // lower = more consistent
+  // Generation counter: if the user changes selection while a render is in
+  // flight, the stale result is discarded instead of overwriting the new one.
+  int _renderGeneration = 0;
+
+  double? _repeatabilityScore;
 
   @override
   void initState() {
@@ -48,22 +54,15 @@ class _CompareScreenState extends State<CompareScreen> {
     _loadSessions();
   }
 
-  @override
-  void dispose() {
-    _heatA.dispose();
-    _heatB.dispose();
-    super.dispose();
-  }
-
   Future<void> _loadSessions() async {
     final storage = context.read<StorageService>();
     final sessions =
         await storage.loadCompletedSessionsForProject(widget.projectId);
 
+    if (!mounted) return;
     setState(() {
       _sessions = sessions;
       _loading = false;
-      // Auto-select the two most recent sessions.
       if (sessions.length >= 2) {
         _sessionA = sessions[0];
         _sessionB = sessions[1];
@@ -77,60 +76,89 @@ class _CompareScreenState extends State<CompareScreen> {
 
   Future<void> _renderComparison() async {
     if (_sessionA == null || _sessionB == null) return;
-    setState(() => _rendering = true);
+
+    // Capture the generation for this render before any awaits.
+    final gen = ++_renderGeneration;
+    if (mounted) setState(() => _rendering = true);
 
     final storage = context.read<StorageService>();
 
-    _pointsA = await storage.loadSamplePoints(_sessionA!.id);
-    _pointsB = await storage.loadSamplePoints(_sessionB!.id);
+    final pointsA = await storage.loadSamplePoints(_sessionA!.id);
+    final pointsB = await storage.loadSamplePoints(_sessionB!.id);
+    final floorplan = await storage.loadFloorplan(_sessionA!.floorplanId);
 
-    // Load floorplan from session A (both share the same project floorplan).
-    _floorplan = await storage.loadFloorplan(_sessionA!.floorplanId);
-
-    // Load image size for correct heatmap overlay positioning.
-    if (_floorplan != null && _floorplan!.imagePath.isNotEmpty) {
+    Size? imageSize;
+    if (floorplan != null && floorplan.imagePath.isNotEmpty) {
       try {
-        final bytes = await File(_floorplan!.imagePath).readAsBytes();
+        final bytes = await File(floorplan.imagePath).readAsBytes();
         final codec = await ui.instantiateImageCodec(bytes);
         final frame = await codec.getNextFrame();
-        _imageSize = Size(
+        imageSize = Size(
             frame.image.width.toDouble(), frame.image.height.toDouble());
       } catch (_) {}
     }
 
-    // Compute combined bounds so both heatmaps use the same coordinate space.
-    final allPoints = [..._pointsA, ..._pointsB];
+    // Compute shared coordinate bounds for both heatmaps.
+    HeatmapResult? resultA;
+    HeatmapResult? resultB;
+    final allPoints = [...pointsA, ...pointsB];
+
     if (allPoints.isNotEmpty) {
       final xs = allPoints.map((p) => p.x).toList();
       final ys = allPoints.map((p) => p.y).toList();
-      final origin = Offset(
-        xs.reduce(min) - 2,
-        ys.reduce(min) - 2,
-      );
+      final origin = Offset(xs.reduce(min) - 2, ys.reduce(min) - 2);
       final size = Size(
         xs.reduce(max) - origin.dx + 2,
         ys.reduce(max) - origin.dy + 2,
       );
 
-      // Render both heatmaps with the same bounds for accurate comparison.
+      // Create fresh HeatmapService instances to avoid the _isProcessing
+      // guard blocking a re-render when the user changes session selection.
+      final svcA = HeatmapService();
+      final svcB = HeatmapService();
+
       await Future.wait([
-        if (_pointsA.isNotEmpty)
-          _heatA.rebuild(
-              points: _pointsA, originMeters: origin, sizeMeters: size),
-        if (_pointsB.isNotEmpty)
-          _heatB.rebuild(
-              points: _pointsB, originMeters: origin, sizeMeters: size),
+        if (pointsA.isNotEmpty)
+          svcA.rebuild(points: pointsA, originMeters: origin, sizeMeters: size),
+        if (pointsB.isNotEmpty)
+          svcB.rebuild(points: pointsB, originMeters: origin, sizeMeters: size),
       ]);
+
+      resultA = svcA.currentResult;
+      resultB = svcB.currentResult;
+
+      // Dispose the service wrappers now that we've extracted the results.
+      // The ui.Image objects inside HeatmapResult remain valid until the
+      // results themselves are replaced.
+      //
+      // NOTE: rebuild() is fully awaited above, so _isProcessing is false
+      // and notifyListeners() will not be called after dispose() — no
+      // use-after-dispose assertion risk.
+      svcA.dispose();
+      svcB.dispose();
     }
 
-    _repeatabilityScore = _computeRepeatability(_pointsA, _pointsB);
+    // Discard if a newer render was requested while we were processing.
+    if (!mounted || gen != _renderGeneration) return;
 
-    if (mounted) setState(() => _rendering = false);
+    // Dispose previous image resources before replacing.
+    _resultA?.image.dispose();
+    _resultB?.image.dispose();
+
+    setState(() {
+      _pointsA = pointsA;
+      _pointsB = pointsB;
+      _floorplan = floorplan;
+      _imageSize = imageSize;
+      _resultA = resultA;
+      _resultB = resultB;
+      _repeatabilityScore = _computeRepeatability(pointsA, pointsB);
+      _rendering = false;
+    });
   }
 
-  /// Compute spatial repeatability: average |RSSI_A − RSSI_B| for pairs of
-  /// measurements within 1.5 m of each other. Returns null if not enough
-  /// overlapping data.
+  /// Spatial repeatability: average |RSSI_A − RSSI_B| for co-located pairs
+  /// (within 1.5 m). Returns null when fewer than 3 pairs are found.
   double? _computeRepeatability(
       List<SamplePoint> a, List<SamplePoint> b) {
     if (a.isEmpty || b.isEmpty) return null;
@@ -141,12 +169,22 @@ class _CompareScreenState extends State<CompareScreen> {
         final dy = pa.y - pb.y;
         if (dx * dx + dy * dy <= 1.5 * 1.5) {
           diffs.add((pa.rssiDbm - pb.rssiDbm).abs());
-          break; // one nearest match per point
+          break;
         }
       }
     }
     if (diffs.length < 3) return null;
     return diffs.reduce((a, b) => a + b) / diffs.length;
+  }
+
+  @override
+  void dispose() {
+    // Only dispose image resources we own. The HeatmapService instances are
+    // always disposed inside _renderComparison() right after rebuild() awaits,
+    // so there is no live service to clean up here.
+    _resultA?.image.dispose();
+    _resultB?.image.dispose();
+    super.dispose();
   }
 
   @override
@@ -197,7 +235,7 @@ class _CompareScreenState extends State<CompareScreen> {
   Widget _buildCompareView(ThemeData theme) {
     return Column(
       children: [
-        // Session selector.
+        // Session selector row.
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
           child: Row(
@@ -235,30 +273,24 @@ class _CompareScreenState extends State<CompareScreen> {
           ),
         ),
 
-        // Toggle A / B.
+        // A / B toggle.
         if (_sessionA != null && _sessionB != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: SegmentedButton<bool>(
-                    segments: const [
-                      ButtonSegment(
-                          value: false,
-                          label: Text('Baseline'),
-                          icon: Icon(Icons.looks_one)),
-                      ButtonSegment(
-                          value: true,
-                          label: Text('Candidate'),
-                          icon: Icon(Icons.looks_two)),
-                    ],
-                    selected: {_showB},
-                    onSelectionChanged: (v) =>
-                        setState(() => _showB = v.first),
-                  ),
-                ),
+            child: SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                    value: false,
+                    label: Text('Baseline'),
+                    icon: Icon(Icons.looks_one)),
+                ButtonSegment(
+                    value: true,
+                    label: Text('Candidate'),
+                    icon: Icon(Icons.looks_two)),
               ],
+              selected: {_showB},
+              onSelectionChanged: (v) =>
+                  setState(() => _showB = v.first),
             ),
           ),
 
@@ -279,9 +311,7 @@ class _CompareScreenState extends State<CompareScreen> {
                   ? const Center(child: Text('No floor plan available.'))
                   : FloorplanCanvas(
                       imagePath: _floorplan!.imagePath,
-                      overlay: (_imageSize != null)
-                          ? _buildOverlay()
-                          : null,
+                      overlay: _buildOverlay(),
                     ),
         ),
 
@@ -299,7 +329,7 @@ class _CompareScreenState extends State<CompareScreen> {
   }
 
   Widget? _buildOverlay() {
-    final result = _showB ? _heatB.currentResult : _heatA.currentResult;
+    final result = _showB ? _resultB : _resultA;
     if (result == null || _floorplan == null || _imageSize == null) {
       return null;
     }
@@ -369,6 +399,7 @@ class _SessionPicker extends StatelessWidget {
                   ))
               .toList(),
           onChanged: (id) {
+            if (id == null) return;
             final s = available.firstWhere((s) => s.id == id);
             onChanged(s);
           },
@@ -472,11 +503,13 @@ class _CompareStatsPanel extends StatelessWidget {
               children: [
                 const Icon(Icons.repeat, size: 14, color: Colors.white38),
                 const SizedBox(width: 6),
-                Text(
-                  'Repeatability score: ±${repeatability!.toStringAsFixed(1)} dBm avg '
-                  '— ${repeatability! <= 3.0 ? 'Consistent' : repeatability! <= 6.0 ? 'Moderate variation' : 'High variation'}',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: Colors.white54),
+                Expanded(
+                  child: Text(
+                    'Repeatability: ±${repeatability!.toStringAsFixed(1)} dBm avg '
+                    '— ${repeatability! <= 3.0 ? 'Consistent' : repeatability! <= 6.0 ? 'Moderate variation' : 'High variation'}',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: Colors.white54),
+                  ),
                 ),
               ],
             ),
@@ -515,8 +548,8 @@ class _StatCol extends StatelessWidget {
               style: theme.textTheme.titleMedium?.copyWith(color: color)),
           if (subLabel.isNotEmpty)
             Text(subLabel,
-                style:
-                    theme.textTheme.bodySmall?.copyWith(color: Colors.white38)),
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: Colors.white38)),
         ],
       ),
     );
