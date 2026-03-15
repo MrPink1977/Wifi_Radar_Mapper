@@ -13,7 +13,7 @@ import '../models/scan_session.dart';
 /// Persists all SignalMap data in a local SQLite database.
 class StorageService {
   static const _dbName = 'signalmap.db';
-  static const _version = 2;
+  static const _version = 3;
 
   late Database _db;
 
@@ -31,12 +31,10 @@ class StorageService {
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // Add router anchor columns to persisted sessions.
-      await db.execute(
-          'ALTER TABLE scan_sessions ADD COLUMN routerX REAL');
-      await db.execute(
-          'ALTER TABLE scan_sessions ADD COLUMN routerY REAL');
+      await db.execute('ALTER TABLE scan_sessions ADD COLUMN routerX REAL');
+      await db.execute('ALTER TABLE scan_sessions ADD COLUMN routerY REAL');
     }
+    // v3: no schema change; version bump reserves space for future migration.
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -118,8 +116,6 @@ class StorageService {
     await _db.delete('projects', where: 'id = ?', whereArgs: [id]);
   }
 
-  /// Stamp the project's updatedAt to now, so the home screen shows
-  /// the project as recently active after a scan completes.
   Future<void> updateProjectTimestamp(String id) async {
     await _db.update(
       'projects',
@@ -172,12 +168,47 @@ class StorageService {
     );
   }
 
+  Future<ScanSession?> loadSessionById(String sessionId) async {
+    final rows = await _db.query(
+      'scan_sessions',
+      where: 'id = ?',
+      whereArgs: [sessionId],
+    );
+    if (rows.isEmpty) return null;
+    return ScanSession.fromMap(rows.first);
+  }
+
   Future<List<ScanSession>> loadSessionsForProject(String projectId) async {
     final rows = await _db.query(
       'scan_sessions',
       where: 'projectId = ?',
       whereArgs: [projectId],
       orderBy: 'startTime DESC',
+    );
+    return rows.map(ScanSession.fromMap).toList();
+  }
+
+  /// Returns the most recent completed scan for [projectId], or null if none.
+  Future<ScanSession?> loadLatestCompletedSession(String projectId) async {
+    final rows = await _db.query(
+      'scan_sessions',
+      where: 'projectId = ? AND state = ?',
+      whereArgs: [projectId, SessionState.complete.name],
+      orderBy: 'endTime DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return ScanSession.fromMap(rows.first);
+  }
+
+  /// Returns all completed scans for [projectId] ordered newest first.
+  Future<List<ScanSession>> loadCompletedSessionsForProject(
+      String projectId) async {
+    final rows = await _db.query(
+      'scan_sessions',
+      where: 'projectId = ? AND state = ?',
+      whereArgs: [projectId, SessionState.complete.name],
+      orderBy: 'endTime DESC',
     );
     return rows.map(ScanSession.fromMap).toList();
   }
