@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import '../models/floorplan.dart';
 import '../models/project.dart';
+import '../models/scan_session.dart';
 import '../services/storage_service.dart';
 
 const _uuid = Uuid();
@@ -18,6 +19,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<Project> _projects = [];
+  Map<String, int> _scanCounts = {};
   bool _loading = true;
 
   @override
@@ -29,9 +31,18 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadProjects() async {
     final storage = context.read<StorageService>();
     final projects = await storage.loadProjects();
+    // Load completed scan counts for each project.
+    final counts = <String, int>{};
+    for (final p in projects) {
+      final sessions = await storage.loadSessionsForProject(p.id);
+      counts[p.id] = sessions
+          .where((s) => s.state == SessionState.complete)
+          .length;
+    }
     if (mounted) {
       setState(() {
         _projects = projects;
+        _scanCounts = counts;
         _loading = false;
       });
     }
@@ -161,6 +172,7 @@ class _HomeScreenState extends State<HomeScreen> {
         itemCount: _projects.length,
         itemBuilder: (_, i) => _ProjectCard(
           project: _projects[i],
+          scanCount: _scanCounts[_projects[i].id] ?? 0,
           onTap: () => context.push('/setup?projectId=${_projects[i].id}'),
           onDelete: () async {
             final confirmed = await _confirmDelete(context, _projects[i].name);
@@ -211,11 +223,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _ProjectCard extends StatelessWidget {
   final Project project;
+  final int scanCount;
   final VoidCallback onTap;
   final VoidCallback onDelete;
 
   const _ProjectCard({
     required this.project,
+    required this.scanCount,
     required this.onTap,
     required this.onDelete,
   });
@@ -239,7 +253,10 @@ class _ProjectCard extends StatelessWidget {
         ),
         title: Text(project.name, style: theme.textTheme.titleLarge),
         subtitle: Text(
-          'Updated ${_formatDate(project.updatedAt)}',
+          scanCount == 0
+              ? 'Updated ${_formatDate(project.updatedAt)} — no scans yet'
+              : 'Updated ${_formatDate(project.updatedAt)} · '
+                '$scanCount scan${scanCount == 1 ? '' : 's'} saved',
           style: theme.textTheme.bodyMedium,
         ),
         trailing: Row(

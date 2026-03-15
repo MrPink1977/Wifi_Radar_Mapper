@@ -118,6 +118,17 @@ class StorageService {
     await _db.delete('projects', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Stamp the project's updatedAt to now, so the home screen shows
+  /// the project as recently active after a scan completes.
+  Future<void> updateProjectTimestamp(String id) async {
+    await _db.update(
+      'projects',
+      {'updatedAt': DateTime.now().toIso8601String()},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   // ── Floorplans ────────────────────────────────────────────────────────────
 
   Future<void> saveFloorplan(Floorplan floorplan) async {

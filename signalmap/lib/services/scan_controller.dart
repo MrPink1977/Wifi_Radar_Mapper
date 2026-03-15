@@ -143,11 +143,15 @@ class ScanController extends ChangeNotifier {
     _session!.recommendations =
         _recommender.analyse(_session!.samplePoints);
 
-    // Persist.
+    // Persist — save before transitioning to complete so the home screen
+    // sees the scan immediately when the user taps Done.
     await storage.saveSession(_session!);
     await storage.saveSamplePoints(_session!.samplePoints);
     await storage.saveRecommendations(
         _session!.id, _session!.recommendations);
+
+    // Bump project updatedAt so it surfaces at the top of the home list.
+    await storage.updateProjectTimestamp(_session!.projectId);
 
     _session!.state = SessionState.complete;
     notifyListeners();
