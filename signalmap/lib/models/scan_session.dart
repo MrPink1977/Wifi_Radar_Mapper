@@ -19,6 +19,9 @@ class ScanSession {
   final List<PathEvent> pathEvents;
   List<Recommendation> recommendations;
   final int algorithmVersion;
+  // Router anchor position in real-world metres (set at scan start).
+  final double? routerX;
+  final double? routerY;
 
   ScanSession({
     required this.id,
@@ -33,6 +36,8 @@ class ScanSession {
     List<PathEvent>? pathEvents,
     List<Recommendation>? recommendations,
     this.algorithmVersion = 1,
+    this.routerX,
+    this.routerY,
   })  : startTime = startTime ?? DateTime.now(),
         samplePoints = samplePoints ?? [],
         pathEvents = pathEvents ?? [],
@@ -59,6 +64,8 @@ class ScanSession {
         'endTime': endTime?.toIso8601String(),
         'state': state.name,
         'algorithmVersion': algorithmVersion,
+        'routerX': routerX,
+        'routerY': routerY,
       };
 
   factory ScanSession.fromMap(Map<String, dynamic> m) => ScanSession(
@@ -79,5 +86,7 @@ class ScanSession {
           orElse: () => SessionState.complete,
         ),
         algorithmVersion: m['algorithmVersion'] as int? ?? 1,
+        routerX: (m['routerX'] as num?)?.toDouble(),
+        routerY: (m['routerY'] as num?)?.toDouble(),
       );
 }

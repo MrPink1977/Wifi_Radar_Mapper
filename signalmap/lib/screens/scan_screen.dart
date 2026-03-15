@@ -105,11 +105,13 @@ class _ScanScreenState extends State<ScanScreen> {
               child: _buildMap(controller),
             ),
 
-            // Scan coach
-            Consumer<MotionService>(
-              builder: (_, motion, __) => ScanCoach(
+            // Scan coach — consumes motion and signal for contextual prompts
+            Consumer2<MotionService, SignalService>(
+              builder: (_, motion, signal, __) => ScanCoach(
                 position: motion.position,
                 sampleCount: session?.sampleCount ?? 0,
+                signalVariance: signal.smoothed?.variance,
+                stepsPerSecond: motion.stepsPerSecond,
               ),
             ),
 
@@ -142,13 +144,23 @@ class _ScanScreenState extends State<ScanScreen> {
             FloorplanCanvas(
               imagePath: floorplan.imagePath,
               markers: [
+                // Router anchor icon at scan start position.
+                if (ctrl.routerAnchorMeters != null)
+                  CanvasMarker(
+                    position: floorplan
+                        .metersToPixels(ctrl.routerAnchorMeters!),
+                    color: const Color(0xFF2196F3),
+                    label: 'R',
+                    radius: 12,
+                  ),
+                // Live position dot (pulsing).
                 CanvasMarker(
                   position: posPixels,
                   color: Theme.of(context).colorScheme.primary,
                   label: '',
                   isPulse: true,
                 ),
-                // Show committed sample points as tiny dots.
+                // Committed sample points as small coloured dots.
                 if (session != null)
                   ...session.samplePoints.map((p) {
                     final px = floorplan.metersToPixels(Offset(p.x, p.y));

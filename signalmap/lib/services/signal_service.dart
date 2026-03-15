@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../utils/constants.dart';
 
@@ -63,8 +64,19 @@ class SignalService extends ChangeNotifier {
   }
 
   Future<void> _checkAvailability() async {
+    // Android 10+ requires ACCESS_FINE_LOCATION to read the connected SSID.
+    // Request the permission here so the SSID shows correctly instead of null.
+    final status = await Permission.location.request();
+    if (!status.isGranted) {
+      isAvailable = false;
+      notifyListeners();
+      return;
+    }
     try {
-      connectedSsid = await _networkInfo.getWifiName();
+      final raw = await _networkInfo.getWifiName();
+      // network_info_plus can wrap the SSID in double-quotes on some builds.
+      connectedSsid = raw?.replaceAll('"', '').trim();
+      if (connectedSsid?.isEmpty ?? true) connectedSsid = null;
       isAvailable = connectedSsid != null;
     } catch (_) {
       isAvailable = false;

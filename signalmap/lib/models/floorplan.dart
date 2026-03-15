@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'dart:ui';
 
 class AnchorPoint {
@@ -49,7 +50,7 @@ class Floorplan {
   void calibrateScale(AnchorPoint a, AnchorPoint b, double realMeters) {
     final dx = a.position.dx - b.position.dx;
     final dy = a.position.dy - b.position.dy;
-    final pixelDist = (dx * dx + dy * dy).abs();
+    final pixelDist = sqrt(dx * dx + dy * dy); // Euclidean distance in pixels
     if (pixelDist > 0 && realMeters > 0) {
       scalePixelsPerMeter = pixelDist / realMeters;
     }
