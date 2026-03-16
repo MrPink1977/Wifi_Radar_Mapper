@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import 'screens/home_screen.dart';
+import 'screens/compare_screen.dart';
 import 'screens/floorplan_setup_screen.dart';
-import 'screens/scan_screen.dart';
+import 'screens/home_screen.dart';
 import 'screens/results_screen.dart';
+import 'screens/scan_screen.dart';
 
 class SignalMapApp extends StatelessWidget {
   const SignalMapApp({super.key});
@@ -108,6 +109,13 @@ final _router = GoRouter(
       builder: (context, state) {
         final sessionId = state.uri.queryParameters['sessionId'] ?? '';
         return ResultsScreen(sessionId: sessionId);
+      },
+    ),
+    GoRoute(
+      path: '/compare',
+      builder: (context, state) {
+        final projectId = state.uri.queryParameters['projectId'] ?? '';
+        return CompareScreen(projectId: projectId);
       },
     ),
   ],

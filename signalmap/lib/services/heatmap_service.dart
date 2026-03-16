@@ -2,7 +2,8 @@ import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart'; 
+import 'package:flutter/painting.dart'; // Offset, Size
+
 import '../models/sample_point.dart';
 import '../utils/constants.dart';
 import '../utils/interpolation.dart';

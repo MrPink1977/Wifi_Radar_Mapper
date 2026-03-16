@@ -5,10 +5,12 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/floorplan.dart';
+import '../models/project.dart';
 import '../services/scan_controller.dart';
 import '../services/signal_service.dart';
 import '../services/storage_service.dart';
@@ -35,7 +37,7 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
   Offset? _calPoint1;
   Offset? _calPoint2;
   final _distanceController = TextEditingController(text: '16.0');
-  bool _useFeet = true; // default; overridden from locale in didChangeDependencies
+  bool _useFeet = true;
 
   // Router anchor
   Offset? _routerAnchorPixels;
@@ -43,9 +45,14 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
   final _picker = ImagePicker();
 
   @override
+  void initState() {
+    super.initState();
+    _tryLoadExistingFloorplan();
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Set unit default once from device locale.
     final locale = Localizations.localeOf(context);
     final shouldUseFeet = locale.countryCode == 'US';
     if (shouldUseFeet != _useFeet) {
@@ -62,7 +69,65 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
     super.dispose();
   }
 
+  /// If this project already has a saved floor plan, skip the upload step.
+  Future<void> _tryLoadExistingFloorplan() async {
+    final storage = context.read<StorageService>();
+    final projects = await storage.loadProjects();
+
+    Project? project;
+    for (final pr in projects) {
+      if (pr.id == widget.projectId) {
+        project = pr;
+        break;
+      }
+    }
+    if (project == null) return;
+
+    final floorplan = await storage.loadFloorplan(project.floorplanId);
+    if (floorplan == null || floorplan.imagePath.isEmpty) return;
+
+    // Only skip upload if the image file still exists on disk.
+    if (!await File(floorplan.imagePath).exists()) return;
+
+    if (mounted) {
+      setState(() {
+        _floorplan = floorplan;
+        _imagePath = floorplan.imagePath;
+        // Skip straight to router placement if already calibrated.
+        if (floorplan.anchorPoints.length >= 2 &&
+            floorplan.scalePixelsPerMeter > 0) {
+          _step = _SetupStep.setRouterAnchor;
+        } else {
+          _step = _SetupStep.calibrate;
+        }
+      });
+    }
+  }
+
   Future<void> _pickImage(ImageSource source) async {
+    // Request the appropriate storage permission before opening gallery.
+    if (source == ImageSource.gallery) {
+      PermissionStatus status;
+      // Android 13+ uses READ_MEDIA_IMAGES, older uses READ_EXTERNAL_STORAGE.
+      if (await Permission.photos.isGranted) {
+        status = PermissionStatus.granted;
+      } else {
+        status = await Permission.photos.request();
+        if (!status.isGranted) {
+          status = await Permission.storage.request();
+        }
+      }
+      if (!status.isGranted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Photo library permission is required to select a floor plan.'),
+          ),
+        );
+        return;
+      }
+    }
+
     final file = await _picker.pickImage(source: source, imageQuality: 90);
     if (file == null) return;
 
@@ -109,7 +174,6 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
     if (_calPoint1 == null || _calPoint2 == null || _floorplan == null) return;
     final rawInput = double.tryParse(_distanceController.text) ??
         (_useFeet ? 16.0 : 5.0);
-    // Always store/calculate in metres internally.
     final distMeters = _useFeet ? rawInput * 0.3048 : rawInput;
 
     final a = AnchorPoint(
@@ -262,8 +326,15 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
                     style: theme.textTheme.titleLarge),
                 const SizedBox(height: 8),
                 Text(
-                  'Use a photo, screenshot, or hand-drawn sketch.\nAny image works.',
+                  'Use a photo, screenshot, or hand-drawn sketch.',
                   style: theme.textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Accepted: JPG, PNG, or take a photo with the camera.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: Colors.white38),
                   textAlign: TextAlign.center,
                 ),
               ],
@@ -312,7 +383,6 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
 
     return Column(
       children: [
-        // Explanation card
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
           child: Container(
@@ -326,9 +396,7 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
             child: Text(
               'Pick two points on your floor plan that you know the real '
               'distance between — for example, tap one end of a hallway '
-              'and then the other. Enter how far apart they really are. '
-              'This tells the app how big your space is so it can place '
-              'signal readings in the right locations.',
+              'and then the other. Enter how far apart they really are.',
               style: theme.textTheme.bodySmall,
             ),
           ),
@@ -343,7 +411,6 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
                     style: theme.textTheme.bodyMedium),
               ),
               const SizedBox(width: 8),
-              // Feet / Meters toggle
               SegmentedButton<bool>(
                 style: SegmentedButton.styleFrom(
                   visualDensity: VisualDensity.compact,
@@ -362,11 +429,9 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
                   setState(() {
                     _useFeet = nowFeet;
                     if (_useFeet) {
-                      // was meters → feet
                       _distanceController.text =
                           (current / 0.3048).toStringAsFixed(1);
                     } else {
-                      // was feet → meters
                       _distanceController.text =
                           (current * 0.3048).toStringAsFixed(1);
                     }
@@ -449,9 +514,7 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
             ),
             child: const Text(
               'Stand next to your router or main Wi-Fi node. Tap your '
-              'router\'s position on the map, then tap Confirm. We will '
-              'record signal strength as you walk and build your coverage '
-              'map in real time.',
+              'router\'s position on the map, then tap Confirm.',
             ),
           ),
         ),
@@ -460,7 +523,7 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
           child: Text(
             _routerAnchorPixels == null
                 ? 'Tap where your router is on the floor plan.'
-                : 'Router placed. Stand next to it in real life, then tap Confirm.',
+                : 'Router placed. Stand next to it, then tap Confirm.',
             style: theme.textTheme.bodyMedium,
             textAlign: TextAlign.center,
           ),
@@ -518,7 +581,7 @@ class _FloorplanSetupScreenState extends State<FloorplanSetupScreen> {
           ),
           _Tip(
             icon: Icons.phone_android,
-            text: 'Hold the phone at chest height.',
+            text: 'Hold the phone upright at chest height.',
           ),
           _Tip(
             icon: Icons.pause_circle_outline,

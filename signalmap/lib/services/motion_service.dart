@@ -42,12 +42,13 @@ class PositionEstimate {
 /// Fuses accelerometer, gyroscope, and compass data to estimate the user's
 /// position during a scan session (dead reckoning).
 ///
-/// Strategy (from spec):
-///   - Start from a known user-selected anchor.
-///   - Step detection via accelerometer magnitude peak detection.
-///   - Heading from compass (first) and gyroscope integration (fallback).
-///   - Confidence decays with time and step count; user can correct via
-///     manual anchor taps.
+/// Heading source priority:
+///   1. Compass (flutter_compass) provides absolute magnetic north reference.
+///   2. Gyroscope Y-axis (yaw when phone held upright in portrait) tracks
+///      heading changes between compass events at high frequency.
+///
+/// This ensures heading updates on every step even if the compass fires slowly
+/// or is unavailable (no magnetometer on device).
 class MotionService extends ChangeNotifier {
   PositionEstimate _position = const PositionEstimate(
     x: 0,
@@ -61,6 +62,7 @@ class MotionService extends ChangeNotifier {
 
   // Subscriptions
   StreamSubscription<AccelerometerEvent>? _accelSub;
+  StreamSubscription<GyroscopeEvent>? _gyroSub;
   StreamSubscription<CompassEvent>? _compassSub;
 
   // Step detection state
@@ -71,7 +73,6 @@ class MotionService extends ChangeNotifier {
   int _stepCount = 0;
 
   /// Approximate steps per second based on total steps and elapsed scan time.
-  /// Returns 0.0 if not enough time has passed to measure meaningfully.
   double get stepsPerSecond {
     if (_startTime == null || _stepCount == 0) return 0.0;
     final elapsed =
@@ -82,6 +83,11 @@ class MotionService extends ChangeNotifier {
 
   // Heading
   double _headingDeg = 0;
+  DateTime? _lastGyroTime;
+  bool _compassAvailable = false;
+
+  /// Whether the heading is coming from an absolute compass source.
+  bool get compassAvailable => _compassAvailable;
 
   // Drift tracking
   DateTime? _startTime;
@@ -93,6 +99,7 @@ class MotionService extends ChangeNotifier {
   void resetToOrigin() {
     _stepCount = 0;
     _startTime = DateTime.now();
+    _lastGyroTime = DateTime.now();
     _position = const PositionEstimate(
       x: 0,
       y: 0,
@@ -104,9 +111,11 @@ class MotionService extends ChangeNotifier {
   }
 
   /// Apply a manual correction anchor at a known real-world position.
+  /// Also resets the gyro integration reference to avoid dt spikes.
   void correctPosition(double x, double y) {
     _position = _position.copyWith(x: x, y: y, confidence: 1.0);
     _startTime = DateTime.now(); // reset drift timer
+    _lastGyroTime = DateTime.now(); // reset gyro dt to avoid large spike
     notifyListeners();
   }
 
@@ -114,14 +123,18 @@ class MotionService extends ChangeNotifier {
     if (_isRunning) return;
     _isRunning = true;
     _startTime = DateTime.now();
+    _lastGyroTime = DateTime.now();
     _subscribeAccelerometer();
+    _subscribeGyroscope();
     _subscribeCompass();
   }
 
   void stop() {
     _accelSub?.cancel();
+    _gyroSub?.cancel();
     _compassSub?.cancel();
     _accelSub = null;
+    _gyroSub = null;
     _compassSub = null;
     _isRunning = false;
   }
@@ -139,12 +152,44 @@ class MotionService extends ChangeNotifier {
     });
   }
 
+  /// Subscribe to the gyroscope for continuous heading tracking.
+  ///
+  /// Uses the device Y-axis (vertical when phone held upright in portrait).
+  /// Positive Y = turning left (CCW from above) → decreasing heading.
+  /// Negative Y = turning right (CW from above) → increasing heading.
+  void _subscribeGyroscope() {
+    _gyroSub = gyroscopeEventStream().listen((event) {
+      final now = DateTime.now();
+      if (_lastGyroTime != null) {
+        final dt = now.difference(_lastGyroTime!).inMicroseconds / 1e6;
+        // Clamp dt to avoid large jumps after pauses.
+        final clampedDt = dt.clamp(0.0, 0.1);
+        // event.y = yaw rate (rad/s) when phone upright in portrait.
+        // Negate: positive Y (left turn) decreases heading toward 0/north.
+        final deltaHeading = -event.y * clampedDt * (180.0 / pi);
+        _headingDeg = (_headingDeg + deltaHeading) % 360.0;
+        if (_headingDeg < 0) _headingDeg += 360.0;
+        _position = _position.copyWith(headingDeg: _headingDeg);
+        notifyListeners();
+      }
+      _lastGyroTime = now;
+    });
+  }
+
+  /// Subscribe to the compass for absolute heading corrections.
+  ///
+  /// When compass data is available it overrides the accumulated gyro heading,
+  /// preventing long-term drift.
   void _subscribeCompass() {
     final stream = FlutterCompass.events;
     if (stream == null) return;
     _compassSub = stream.listen((event) {
       if (event.heading != null) {
         _headingDeg = event.heading!;
+        _compassAvailable = true;
+        // Reset gyro reference time so the next gyro integration starts
+        // cleanly from the compass-corrected heading.
+        _lastGyroTime = DateTime.now();
         _position = _position.copyWith(headingDeg: _headingDeg);
         notifyListeners();
       }
@@ -162,7 +207,9 @@ class MotionService extends ChangeNotifier {
     _lastStepTime = now;
     _stepCount++;
 
-    // Advance position by one stride in current heading direction.
+    // Advance position by one stride in the CURRENT heading direction.
+    // _headingDeg is updated continuously by gyroscope (and compass when
+    // available), so this reads the correct heading at each step.
     final rad = _headingDeg * pi / 180.0;
     final dx = kDefaultStrideMeters * sin(rad);
     final dy = -kDefaultStrideMeters * cos(rad); // negative: up = north
